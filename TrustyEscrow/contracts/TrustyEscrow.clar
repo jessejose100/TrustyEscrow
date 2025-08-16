@@ -196,4 +196,76 @@
   )
 )
 
+;; Complex dispute resolution function with multiple outcomes
+;; This function allows the contract owner to resolve disputes with various options
+(define-public (resolve-dispute-with-distribution (escrow-id uint) 
+                                                  (resolution (string-ascii 300))
+                                                  (client-percentage uint)
+                                                  (freelancer-percentage uint)
+                                                  (penalty-amount uint))
+  (let ((escrow-data (try! (get-escrow-or-fail escrow-id)))
+        (dispute-data (unwrap! (map-get? disputes { escrow-id: escrow-id }) ERR-NOT-FOUND))
+        (total-amount (get amount escrow-data))
+        (fee (calculate-fee total-amount))
+        (distributable-amount (- total-amount fee penalty-amount))
+        (client-share (/ (* distributable-amount client-percentage) u100))
+        (freelancer-share (/ (* distributable-amount freelancer-percentage) u100)))
+    
+    ;; Authorization and validation checks
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-OWNER-ONLY)
+    (asserts! (is-eq (get status escrow-data) STATUS-DISPUTED) ERR-INVALID-STATUS)
+    (asserts! (is-eq (get resolved dispute-data) false) ERR-INVALID-STATUS)
+    (asserts! (is-eq (+ client-percentage freelancer-percentage) u100) ERR-INVALID-AMOUNT)
+    (asserts! (<= penalty-amount total-amount) ERR-INVALID-AMOUNT)
+    
+    ;; Distribute funds based on resolution percentages
+    (if (> client-share u0)
+        (try! (as-contract (stx-transfer? client-share tx-sender (get client escrow-data))))
+        true)
+    
+    (if (> freelancer-share u0)
+        (try! (as-contract (stx-transfer? freelancer-share tx-sender (get freelancer escrow-data))))
+        true)
+    
+    ;; Collect standard fee plus any penalty
+    (let ((total-fee-and-penalty (+ fee penalty-amount)))
+      (if (> total-fee-and-penalty u0)
+          (try! (as-contract (stx-transfer? total-fee-and-penalty tx-sender CONTRACT-OWNER)))
+          true))
+    
+    ;; Update fees collected
+    (var-set total-fees-collected (+ (var-get total-fees-collected) fee))
+    
+    ;; Mark dispute as resolved
+    (map-set disputes
+      { escrow-id: escrow-id }
+      (merge dispute-data { 
+        resolution: resolution, 
+        resolved: true 
+      }))
+    
+    ;; Update escrow status to completed
+    (map-set escrows
+      { escrow-id: escrow-id }
+      (merge escrow-data { status: STATUS-COMPLETED }))
+    
+    ;; Emit detailed resolution event
+    (print { 
+      event: "dispute-resolved", 
+      escrow-id: escrow-id, 
+      client-share: client-share,
+      freelancer-share: freelancer-share,
+      penalty: penalty-amount,
+      resolution: resolution 
+    })
+    
+    (ok {
+      client-received: client-share,
+      freelancer-received: freelancer-share,
+      penalty-applied: penalty-amount,
+      total-distributed: (+ client-share freelancer-share)
+    })
+  )
+)
+
 
